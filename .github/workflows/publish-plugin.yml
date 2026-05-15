@@ -1,10 +1,10 @@
-# Reusable workflow — commit this to:
-#   nebuladesignagency/.github/.github/workflows/publish-plugin.yml
-#
-# Each plugin repo calls it from its own .github/workflows/release.yml.
-# Trust model: GitHub mints a short-lived OIDC token with aud=https://nebula.design/updates;
-# the update server validates the JWT (issuer, audience, repo allowlist, tag ref, release event,
-# iat/exp window) before accepting the zip.
+# Reusable workflow -- commit this to:
+  #   nebuladesignagency/.github/.github/workflows/publish-plugin.yml
+  #
+  # Each plugin repo calls it from its own .github/workflows/release.yml.
+  # Trust model: GitHub mints a short-lived OIDC token with aud=https://nebula.design/updates;
+  # the update server validates the JWT (issuer, audience, repo allowlist, tag ref, release event,
+  # iat/exp window) before accepting the zip.
 
   name: Publish plugin to nebula.design
 
@@ -34,7 +34,7 @@
 
   permissions:
     contents: read
-    id-token: write          # required to mint the OIDC token
+    id-token: write
 
   jobs:
     publish:
@@ -57,7 +57,7 @@
             fi
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
-            echo "Slug: $SLUG · Version: $VERSION"
+            echo "Slug: $SLUG  Version: $VERSION"
 
         - name: Setup PHP (composer cache)
           if: hashFiles('composer.json') != ''
@@ -81,17 +81,16 @@
           if: ${{ inputs.build_command != '' }}
           run: ${{ inputs.build_command }}
 
-        - name: Stage + zip
+        - name: Stage and zip
           shell: bash
           run: |
             set -euo pipefail
             SLUG="${{ steps.meta.outputs.slug }}"
             VERSION="${{ steps.meta.outputs.version }}"
             mkdir -p build
-            # rsync into a folder whose name is exactly the slug — the update server REJECTS the 
-  publish
-            # if the zip's top-level folder doesn't equal the slug, because that would orphan WP 
-  installs.
+            # rsync into a folder whose name is exactly the slug -- the update server REJECTS
+            # the publish if the zip top-level folder does not equal the slug, because that
+            # would orphan WP installs.
             if [[ -f .distignore ]]; then
               rsync -a --delete --exclude-from=.distignore --exclude='/.git' --exclude='build' ./ 
   "build/${SLUG}/"
@@ -115,7 +114,6 @@
             if [[ -f .github/render-changelog.sh ]]; then
               bash .github/render-changelog.sh > build/changelog.html <<<"$RELEASE_BODY"
             else
-              # Fallback: wrap the raw release body in <pre> so something always ships.
               printf '<pre>%s</pre>\n' "$(printf '%s' "$RELEASE_BODY" | sed 's/&/\&amp;/g; 
   s/</\&lt;/g; s/>/\&gt;/g')" > build/changelog.html
             fi
@@ -151,4 +149,4 @@
               -F "zip=@build/${SLUG}-${VERSION}.zip" \
               "https://nebula.design/updates/api/v1/publish"
             echo
-            echo "✓ Published ${SLUG} ${VERSION}"
+            echo "Published ${SLUG} ${VERSION}"
