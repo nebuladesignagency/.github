@@ -1,4 +1,6 @@
-# Reusable workflow -- commit this to: nebuladesignagency/.github/.github/workflows/publish-plugin.yml
+# Reusable workflow -- commit this to:
+#   nebuladesignagency/.github/.github/workflows/publish-plugin.yml
+#
 # Each plugin repo calls it from its own .github/workflows/release.yml.
 # Trust model: GitHub mints a short-lived OIDC token with aud=https://nebula.design/updates;
 # the update server validates the JWT (issuer, audience, repo allowlist, tag ref, release event,
@@ -79,21 +81,24 @@ jobs:
         if: ${{ inputs.build_command != '' }}
         run: ${{ inputs.build_command }}
 
-      - name: Stage + zip
+      - name: Stage and zip
         shell: bash
         run: |
           set -euo pipefail
           SLUG="${{ steps.meta.outputs.slug }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          mkdir -p build
-          # rsync into a folder whose name is exactly the slug -- the update server REJECTS the publish
-          # if the zip's top-level folder doesn't equal the slug, because that would orphan WP installs.
+          STAGING=".nebula-build"
+          mkdir -p "$STAGING"
+          # rsync into a folder whose name is exactly the slug -- the update server REJECTS
+          # the publish if the zip top-level folder does not equal the slug, because that
+          # would orphan WP installs. The staging dir name is chosen to NOT collide with
+          # anything a plugin might have in its repo (no plugin has a top-level .nebula-build/).
           if [[ -f .distignore ]]; then
-            rsync -a --delete --exclude-from=.distignore --exclude='/.git' --exclude='build' ./ "build/${SLUG}/"
+            rsync -a --delete --exclude-from=.distignore --exclude='/.git' --exclude="/$STAGING" ./ "$STAGING/${SLUG}/"
           else
-            rsync -a --delete --exclude='/.git' --exclude='build' --exclude='node_modules' --exclude='vendor/bin' --exclude='/tests' --exclude='*.md' ./ "build/${SLUG}/"
+            rsync -a --delete --exclude='/.git' --exclude="/$STAGING" --exclude='node_modules' --exclude='vendor/bin' --exclude='/tests' --exclude='*.md' ./ "$STAGING/${SLUG}/"
           fi
-          cd build
+          cd "$STAGING"
           zip -qr "${SLUG}-${VERSION}.zip" "${SLUG}"
           sha256sum "${SLUG}-${VERSION}.zip" | awk '{print $1}' > "${SLUG}-${VERSION}.sha256"
           echo "Zip size: $(stat -c%s ${SLUG}-${VERSION}.zip) bytes"
@@ -107,12 +112,12 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f .github/render-changelog.sh ]]; then
-            bash .github/render-changelog.sh > build/changelog.html <<<"$RELEASE_BODY"
+            bash .github/render-changelog.sh > .nebula-build/changelog.html <<<"$RELEASE_BODY"
           else
             # Fallback: wrap the raw release body in <pre> so something always ships.
-            printf '<pre>%s</pre>\n' "$(printf '%s' "$RELEASE_BODY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')" > build/changelog.html
+            printf '<pre>%s</pre>\n' "$(printf '%s' "$RELEASE_BODY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')" > .nebula-build/changelog.html
           fi
-          echo "Rendered $(wc -c < build/changelog.html) bytes of changelog HTML."
+          echo "Rendered $(wc -c < .nebula-build/changelog.html) bytes of changelog HTML."
 
       - name: Mint OIDC token
         id: tok
@@ -131,7 +136,7 @@ jobs:
           set -euo pipefail
           SLUG="${{ steps.meta.outputs.slug }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          SHA=$(cat "build/${SLUG}-${VERSION}.sha256")
+          SHA=$(cat ".nebula-build/${SLUG}-${VERSION}.sha256")
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${OIDC_TOKEN}" \
             -F "slug=${SLUG}" \
@@ -140,8 +145,8 @@ jobs:
             -F "tested_wp=${{ inputs.tested_wp }}" \
             -F "requires_wp=${{ inputs.requires_wp }}" \
             -F "requires_php=${{ inputs.requires_php }}" \
-            -F "changelog_html=<build/changelog.html" \
-            -F "zip=@build/${SLUG}-${VERSION}.zip" \
+            -F "changelog_html=<.nebula-build/changelog.html" \
+            -F "zip=@.nebula-build/${SLUG}-${VERSION}.zip" \
             "https://nebula.design/updates/api/v1/publish"
           echo
           echo "Published ${SLUG} ${VERSION}"
