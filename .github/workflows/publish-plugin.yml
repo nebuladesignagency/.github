@@ -1,6 +1,4 @@
-# Reusable workflow -- commit this to:
-#   nebuladesignagency/.github/.github/workflows/publish-plugin.yml
-#
+# Reusable workflow -- commit this to: nebuladesignagency/.github/.github/workflows/publish-plugin.yml
 # Each plugin repo calls it from its own .github/workflows/release.yml.
 # Trust model: GitHub mints a short-lived OIDC token with aud=https://nebula.design/updates;
 # the update server validates the JWT (issuer, audience, repo allowlist, tag ref, release event,
