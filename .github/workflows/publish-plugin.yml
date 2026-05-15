@@ -1,0 +1,154 @@
+# Reusable workflow — commit this to:
+#   nebuladesignagency/.github/.github/workflows/publish-plugin.yml
+#
+# Each plugin repo calls it from its own .github/workflows/release.yml.
+# Trust model: GitHub mints a short-lived OIDC token with aud=https://nebula.design/updates;
+# the update server validates the JWT (issuer, audience, repo allowlist, tag ref, release event,
+# iat/exp window) before accepting the zip.
+
+  name: Publish plugin to nebula.design
+
+  on:
+    workflow_call:
+      inputs:
+        requires_wp:
+          description: 'Minimum supported WordPress version'
+          required: false
+          default: '5.0'
+          type: string
+        tested_wp:
+          description: 'Tested up to WordPress version'
+          required: false
+          default: '6.8.3'
+          type: string
+        requires_php:
+          description: 'Minimum supported PHP version'
+          required: false
+          default: '7.4'
+          type: string
+        build_command:
+          description: 'Optional build command (e.g. "npm ci && npm run build")'
+          required: false
+          default: ''
+          type: string
+
+  permissions:
+    contents: read
+    id-token: write          # required to mint the OIDC token
+
+  jobs:
+    publish:
+      runs-on: ubuntu-latest
+      timeout-minutes: 10
+      steps:
+        - uses: actions/checkout@v4
+
+        - name: Derive slug and version
+          id: meta
+          shell: bash
+          run: |
+            set -euo pipefail
+            TAG_REF="${GITHUB_REF_NAME}"
+            VERSION="${TAG_REF#v}"
+            SLUG="${GITHUB_REPOSITORY##*/}"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([-+][A-Za-z0-9.]+)?$ ]]; then
+              echo "::error::Tag '$TAG_REF' does not match a SemVer-ish 'vX.Y[.Z]' pattern."
+              exit 1
+            fi
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+            echo "Slug: $SLUG · Version: $VERSION"
+
+        - name: Setup PHP (composer cache)
+          if: hashFiles('composer.json') != ''
+          uses: shivammathur/setup-php@v2
+          with:
+            php-version: '8.1'
+            tools: composer
+
+        - name: Composer install (no dev)
+          if: hashFiles('composer.json') != ''
+          run: composer install --no-dev --prefer-dist --no-interaction --no-progress
+
+        - name: Setup Node
+          if: hashFiles('package.json') != ''
+          uses: actions/setup-node@v4
+          with:
+            node-version: '20'
+            cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+
+        - name: Run build command
+          if: ${{ inputs.build_command != '' }}
+          run: ${{ inputs.build_command }}
+
+        - name: Stage + zip
+          shell: bash
+          run: |
+            set -euo pipefail
+            SLUG="${{ steps.meta.outputs.slug }}"
+            VERSION="${{ steps.meta.outputs.version }}"
+            mkdir -p build
+            # rsync into a folder whose name is exactly the slug — the update server REJECTS the 
+  publish
+            # if the zip's top-level folder doesn't equal the slug, because that would orphan WP 
+  installs.
+            if [[ -f .distignore ]]; then
+              rsync -a --delete --exclude-from=.distignore --exclude='/.git' --exclude='build' ./ 
+  "build/${SLUG}/"
+            else
+              rsync -a --delete --exclude='/.git' --exclude='build' --exclude='node_modules' 
+  --exclude='vendor/bin' --exclude='/tests' --exclude='*.md' ./ "build/${SLUG}/"
+            fi
+            cd build
+            zip -qr "${SLUG}-${VERSION}.zip" "${SLUG}"
+            sha256sum "${SLUG}-${VERSION}.zip" | awk '{print $1}' > "${SLUG}-${VERSION}.sha256"
+            echo "Zip size: $(stat -c%s ${SLUG}-${VERSION}.zip) bytes"
+            echo "SHA-256:  $(cat ${SLUG}-${VERSION}.sha256)"
+
+        - name: Render changelog HTML
+          id: changelog
+          shell: bash
+          env:
+            RELEASE_BODY: ${{ github.event.release.body }}
+          run: |
+            set -euo pipefail
+            if [[ -f .github/render-changelog.sh ]]; then
+              bash .github/render-changelog.sh > build/changelog.html <<<"$RELEASE_BODY"
+            else
+              # Fallback: wrap the raw release body in <pre> so something always ships.
+              printf '<pre>%s</pre>\n' "$(printf '%s' "$RELEASE_BODY" | sed 's/&/\&amp;/g; 
+  s/</\&lt;/g; s/>/\&gt;/g')" > build/changelog.html
+            fi
+            echo "Rendered $(wc -c < build/changelog.html) bytes of changelog HTML."
+
+        - name: Mint OIDC token
+          id: tok
+          uses: actions/github-script@v7
+          with:
+            script: |
+              const tok = await core.getIDToken('https://nebula.design/updates');
+              core.setSecret(tok);
+              core.setOutput('token', tok);
+
+        - name: Publish to nebula.design
+          shell: bash
+          env:
+            OIDC_TOKEN: ${{ steps.tok.outputs.token }}
+          run: |
+            set -euo pipefail
+            SLUG="${{ steps.meta.outputs.slug }}"
+            VERSION="${{ steps.meta.outputs.version }}"
+            SHA=$(cat "build/${SLUG}-${VERSION}.sha256")
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer ${OIDC_TOKEN}" \
+              -F "slug=${SLUG}" \
+              -F "version=${VERSION}" \
+              -F "zip_sha256=${SHA}" \
+              -F "tested_wp=${{ inputs.tested_wp }}" \
+              -F "requires_wp=${{ inputs.requires_wp }}" \
+              -F "requires_php=${{ inputs.requires_php }}" \
+              -F "changelog_html=<build/changelog.html" \
+              -F "zip=@build/${SLUG}-${VERSION}.zip" \
+              "https://nebula.design/updates/api/v1/publish"
+            echo
+            echo "✓ Published ${SLUG} ${VERSION}"
