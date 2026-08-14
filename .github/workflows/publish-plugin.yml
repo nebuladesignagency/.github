@@ -177,8 +177,18 @@ jobs:
       # interchangeable: 'package' not 'zip', 'changelog' not 'changelog_html'.
       # requires_php / requires_wp / tested_up_to are NOT sent -- the licence
       # server reads them from the plugin file header inside the zip.
+      #
+      # always() so this still runs when the LEGACY publish failed. The two
+      # channels are independent destinations, not a sequence: if the legacy
+      # server is down, retired, or mid-maintenance, that is no reason to
+      # withhold the release from the licence server as well. Without always(),
+      # a legacy outage silently strands every migrated site on its current
+      # version — which is exactly what happened to 1.14.5.
+      #
+      # The job still goes red if either publish failed, so a half-published
+      # release is never mistaken for a clean one.
       - name: Publish to the licence server
-        if: ${{ inputs.licence_publish_url != '' }}
+        if: ${{ always() && inputs.licence_publish_url != '' }}
         shell: bash
         env:
           OIDC_TOKEN: ${{ steps.tok.outputs.token }}
@@ -202,9 +212,10 @@ jobs:
             "${LICENCE_URL}"; then
             echo
             echo "::error::Licence-server publish FAILED for ${SLUG} ${VERSION}."
-            echo "::error::The LEGACY publish already SUCCEEDED - do not simply re-run this job,"
-            echo "::error::or the legacy channel will receive a duplicate publish. Fix the licence"
-            echo "::error::server, then publish this version from its admin panel by hand."
+            echo "::error::Check the legacy step above before re-running: if IT succeeded, a"
+            echo "::error::re-run publishes to the legacy channel a second time. In that case fix"
+            echo "::error::the licence server and publish this version from its admin panel by"
+            echo "::error::hand. Only re-run the job when BOTH publishes failed."
             exit 1
           fi
           echo
