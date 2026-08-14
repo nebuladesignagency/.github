@@ -31,6 +31,18 @@ on:
         required: false
         default: ''
         type: string
+      licence_publish_url:
+        description: >
+          Optional SECOND publish target (the licence server, e.g.
+          https://licence.nebula.design/v1/publish). Empty means legacy-only,
+          which is the default so plugins that have not cut over are untouched.
+          When set, the release is published to BOTH: the legacy channel still
+          serves every site on an older plugin build, while the licence server
+          serves sites that have migrated. Both must keep receiving releases
+          for the whole cutover, or one half of the fleet stops getting updates.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -150,4 +162,50 @@ jobs:
             -F "zip=@.nebula-build/${SLUG}-${VERSION}.zip" \
             "https://nebula.design/updates/api/v1/publish"
           echo
-          echo "Published ${SLUG} ${VERSION}"
+          echo "Published ${SLUG} ${VERSION} to the legacy channel"
+
+      # Second target, opt-in per plugin. Runs only when the caller passes
+      # licence_publish_url, so plugins still on legacy-only are unaffected.
+      #
+      # Same OIDC token as above: the licence server's OIDC_AUDIENCE is also
+      # 'https://nebula.design/updates'. That is a bare identifier the server
+      # compares against, NOT a URL it calls, so it deliberately still names the
+      # old host. Minting a second token with a different audience would fail
+      # verification with 401 oidc_rejected.
+      #
+      # The field names differ from the legacy endpoint and are not
+      # interchangeable: 'package' not 'zip', 'changelog' not 'changelog_html'.
+      # requires_php / requires_wp / tested_up_to are NOT sent -- the licence
+      # server reads them from the plugin file header inside the zip.
+      - name: Publish to the licence server
+        if: ${{ inputs.licence_publish_url != '' }}
+        shell: bash
+        env:
+          OIDC_TOKEN: ${{ steps.tok.outputs.token }}
+          LICENCE_URL: ${{ inputs.licence_publish_url }}
+        run: |
+          set -euo pipefail
+          SLUG="${{ steps.meta.outputs.slug }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          # Deliberately fails the job on error. A release that lands on one
+          # channel and silently misses the other is the worst outcome: half the
+          # fleet updates, nobody notices, and it surfaces weeks later as
+          # "updates stopped working" on the other half.
+          if ! curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -F "slug=${SLUG}" \
+            -F "version=${VERSION}" \
+            -F "channel=stable" \
+            -F "changelog=<.nebula-build/changelog.html" \
+            -F "package=@.nebula-build/${SLUG}-${VERSION}.zip" \
+            "${LICENCE_URL}"; then
+            echo
+            echo "::error::Licence-server publish FAILED for ${SLUG} ${VERSION}."
+            echo "::error::The LEGACY publish already SUCCEEDED - do not simply re-run this job,"
+            echo "::error::or the legacy channel will receive a duplicate publish. Fix the licence"
+            echo "::error::server, then publish this version from its admin panel by hand."
+            exit 1
+          fi
+          echo
+          echo "Published ${SLUG} ${VERSION} to the licence server"
